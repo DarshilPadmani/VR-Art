@@ -182,6 +182,7 @@ public class BrushUIController : MonoBehaviour
 
         // 1. Sync color
         _previewMaterialInstance.color = settings.activeColor;
+        SyncBrushMaterialColor(settings.activeColor);
 
         // 2. Sync metallic and smoothness
         if (_previewMaterialInstance.HasProperty("_Metallic"))
@@ -246,6 +247,9 @@ public class BrushUIController : MonoBehaviour
     {
         GetBrushRadiusRange(out float minRadius, out float maxRadius);
         settings.brushRadius = Mathf.Lerp(minRadius, maxRadius, sliderValue);
+
+        if (drawingManager != null)
+            drawingManager.UpdateFireBrushSize(settings.brushRadius);
     }
 
     public void AdjustSliderValue(float delta)
@@ -266,6 +270,34 @@ public class BrushUIController : MonoBehaviour
     public void SetBrushShape(int index)
     {
         settings.activeShape = (BrushSettings.BrushShape)ClampShapeIndex(index);
+    }
+
+    public void SetStandardBrush()
+    {
+        ChangeBrushType("standard");
+    }
+
+    public void SetFireBrush()
+    {
+        ChangeBrushType("fire");
+    }
+
+    public void SetSparkleBrush()
+    {
+        ChangeBrushType("sparkle");
+    }
+
+    public void SetIceBrush()
+    {
+        ChangeBrushType("sparkle");
+    }
+
+    public void ChangeBrushType(string type)
+    {
+        if (drawingManager == null)
+            return;
+
+        drawingManager.ChangeBrushType(type);
     }
 
     public void SelectStrokePreset(BrushSettings newPreset)
@@ -299,6 +331,7 @@ public class BrushUIController : MonoBehaviour
         if (_previewMaterialInstance != null)
         {
             _previewMaterialInstance.color = settings.activeColor;
+            SyncBrushMaterialColor(settings.activeColor);
 
             if (_previewMaterialInstance.HasProperty("_Metallic"))
                 _previewMaterialInstance.SetFloat("_Metallic", settings.metallic);
@@ -427,6 +460,7 @@ public class BrushUIController : MonoBehaviour
         ApplyStretchAmount(_previewMaterialInstance);
 
         _previewMaterialInstance.color = settings.activeColor;
+        SyncBrushMaterialColor(settings.activeColor);
 
         if (_previewMaterialInstance.HasProperty("_Metallic"))
             _previewMaterialInstance.SetFloat("_Metallic", settings.metallic);
@@ -553,12 +587,14 @@ public class BrushUIController : MonoBehaviour
             (c) =>
             {
                 settings.activeColor = c;
+                SyncBrushMaterialColor(c);
                 SyncUIWithSettings();
                 Debug.Log("<color=cyan>[Brush]</color> Live Color Sync: " + c);
             },
             (c) =>
             {
                 settings.activeColor = c;
+                SyncBrushMaterialColor(c);
             },
             false
         );
@@ -586,7 +622,27 @@ public class BrushUIController : MonoBehaviour
             drawingManager.settings = settings;
         }
 
+        SyncBrushMaterialColor(newColor);
+
         Debug.Log($"<color=green>[Brush Sync]</color> Brush Color updated to: {newColor}");
+    }
+
+    private void SyncBrushMaterialColor(Color color)
+    {
+        if (drawingManager == null || drawingManager.brushMaterial == null)
+            return;
+
+        Material material = drawingManager.brushMaterial;
+        material.color = color;
+
+        if (material.HasProperty("_BaseColor"))
+            material.SetColor("_BaseColor", color);
+
+        if (material.HasProperty("_Color"))
+            material.SetColor("_Color", color);
+
+        if (settings != null && settings.isElectric && material.HasProperty("_EmissionColor"))
+            material.SetColor("_EmissionColor", settings.emissionColor * Mathf.LinearToGammaSpace(settings.emissionIntensity));
     }
 
     public void UndoStroke()

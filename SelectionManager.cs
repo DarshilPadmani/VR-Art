@@ -29,6 +29,12 @@ public class SelectionManager : MonoBehaviour
     public DrawingHistoryManager historyManager;
     public Transform artworkContainer;
 
+    [Header("Grouping Config")]
+    public GameObject groupCubePrefab;
+    public InputActionProperty leftPrimaryButton;
+    public float requiredHoldTime = 1.0f;
+    public float spawnScale = 0.37f;
+
     [Header("Animation & Defaults")]
     public float pulseAmount = 0.015f;
     public float pulseSpeed = 8f;
@@ -45,6 +51,8 @@ public class SelectionManager : MonoBehaviour
     private float _aButtonPressTime;
     private bool _isAButtonHeld;
     private bool _handledDirectGrabThisPress;
+    private float _leftButtonPressTime;
+    private bool _isLeftButtonPressed;
 
     public bool isSphereModeActive = false;
 
@@ -71,6 +79,9 @@ public class SelectionManager : MonoBehaviour
         if (secondaryButtonRight.action != null)
             secondaryButtonRight.action.Enable();
 
+        if (leftPrimaryButton.action != null)
+            leftPrimaryButton.action.Enable();
+
         BindUiListeners();
         RefreshGrabSubscriptions();
         StartPulseRoutine();
@@ -84,6 +95,9 @@ public class SelectionManager : MonoBehaviour
         if (secondaryButtonRight.action != null)
             secondaryButtonRight.action.Disable();
 
+        if (leftPrimaryButton.action != null)
+            leftPrimaryButton.action.Disable();
+
         UnbindUiListeners();
         StopPulseRoutine();
         ClearGrabSubscriptions();
@@ -93,6 +107,34 @@ public class SelectionManager : MonoBehaviour
     {
         UpdateSphereModeFromSecondaryButton();
         HandlePrimaryButton();
+        HandleGroupingHold();
+    }
+
+    private void HandleGroupingHold()
+    {
+        if (leftPrimaryButton.action == null)
+            return;
+
+        if (leftPrimaryButton.action.WasPressedThisFrame())
+        {
+            _leftButtonPressTime = Time.time;
+            _isLeftButtonPressed = true;
+        }
+
+        if (_isLeftButtonPressed)
+        {
+            float holdDuration = Time.time - _leftButtonPressTime;
+            if (holdDuration >= requiredHoldTime)
+            {
+                if (_selectedStrokes.Count > 0)
+                    CreateGroupFromSelection();
+
+                _isLeftButtonPressed = false;
+            }
+        }
+
+        if (leftPrimaryButton.action.WasReleasedThisFrame())
+            _isLeftButtonPressed = false;
     }
 
     private void BindUiListeners()
@@ -272,6 +314,69 @@ public class SelectionManager : MonoBehaviour
 
         _selectedStrokes.Clear();
         _originalScales.Clear();
+    }
+
+    private void CreateGroupFromSelection()
+    {
+        if (_selectedStrokes.Count == 0)
+            return;
+
+        if (groupCubePrefab == null || artworkContainer == null)
+        {
+            Debug.LogWarning("[Group] Missing groupCubePrefab or artworkContainer.");
+            return;
+        }
+
+        Vector3 centerSum = Vector3.zero;
+        int count = 0;
+        foreach (var obj in _selectedStrokes)
+        {
+            if (obj == null)
+                continue;
+
+            Renderer renderer = obj.GetComponent<Renderer>();
+            centerSum += renderer != null ? renderer.bounds.center : obj.transform.position;
+            count++;
+        }
+
+        if (count == 0)
+            return;
+
+        Vector3 finalCenter = centerSum / count;
+
+        GameObject newGroup = Instantiate(groupCubePrefab, finalCenter, Quaternion.identity, artworkContainer);
+        newGroup.name = "[Group_Container]";
+        newGroup.transform.localScale = new Vector3(spawnScale, spawnScale, spawnScale);
+
+        foreach (GameObject stroke in _selectedStrokes)
+        {
+            if (stroke == null)
+                continue;
+
+            if (_originalScales.ContainsKey(stroke))
+                stroke.transform.localScale = _originalScales[stroke];
+
+            stroke.transform.SetParent(newGroup.transform);
+        }
+
+        Debug.Log($"<color=magenta>[Group]</color> Successfully grouped {count} items.");
+        ClearAllSelection();
+    }
+
+    public void ClearAllContainers()
+    {
+        if (artworkContainer == null)
+            return;
+
+        List<GameObject> toDestroy = new List<GameObject>();
+        foreach (Transform child in artworkContainer)
+        {
+            if (child != null && child.name.Contains("[Group_Container]"))
+                toDestroy.Add(child.gameObject);
+        }
+
+        foreach (GameObject group in toDestroy)
+            Destroy(group);
     }
 
     private float GetSpawnDistance()
