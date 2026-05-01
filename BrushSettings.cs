@@ -11,6 +11,10 @@ public class BrushSettings : ScriptableObject
     public float brushRadius = 0.02f;
     public int smoothingLevel = 5; // How many points to average for smooth lines
 
+    [Header("Preset Assets")]
+    public Material strokeMaterial;
+    public GameObject brushPrefabOverride;
+
     [Header("PBR Properties")]
     [Range(0f, 1f)] public float smoothness = 0.5f;
     [Range(0f, 1f)] public float metallic = 0.0f;

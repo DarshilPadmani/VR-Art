@@ -17,7 +17,7 @@ public class BrushButton : MonoBehaviour
         }
 
         if (brushMaterial != null)
-            drawingManager.brushMaterial = brushMaterial;
+            drawingManager.SetBrushMaterial(brushMaterial);
 
         if (!string.IsNullOrWhiteSpace(brushName))
             drawingManager.ChangeBrushType(brushName);

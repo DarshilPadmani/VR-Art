@@ -15,7 +15,10 @@ public class MaterialPropertyButton : MonoBehaviour
     [Range(0f, 1f)] public float targetSmoothness = 0.5f;
     [Range(0f, 1f)] public float targetMetallic = 0f;
     public Color targetColor = Color.white;
+
     [Header("Style Assets")]
+    public Material targetStrokeMaterial;
+    public GameObject targetBrushPrefab;
     public Texture2D targetTexture;
     public Vector2 targetTiling = Vector2.one;
 
@@ -48,6 +51,10 @@ public class MaterialPropertyButton : MonoBehaviour
         settings.brushRadius = targetBrushRadius;
         settings.smoothness = targetSmoothness;
         settings.metallic = targetMetallic;
+        if (targetStrokeMaterial != null)
+            settings.strokeMaterial = targetStrokeMaterial;
+        if (targetBrushPrefab != null)
+            settings.brushPrefabOverride = targetBrushPrefab;
         settings.brushTexture = targetTexture;
         settings.tiling = targetTiling;
         settings.activeColor = activeColor;

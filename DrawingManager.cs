@@ -123,6 +123,84 @@ public class DrawingManager : MonoBehaviour
     }
 
     private GameObject StandardBrushPrefab => standardBrushPrefab != null ? standardBrushPrefab : standardPrefab;
+    public GameObject ActiveBrushPrefab => ResolveActiveBrushPrefab();
+    public Material ActiveBrushMaterial => ResolveActiveBrushMaterial();
+
+    private GameObject ResolveActiveBrushPrefab()
+    {
+        if (settings != null && settings.brushPrefabOverride != null)
+            return settings.brushPrefabOverride;
+
+        if (_activeBrushPrefab != null)
+            return _activeBrushPrefab;
+
+        return StandardBrushPrefab != null ? StandardBrushPrefab : strokePrefab;
+    }
+
+    private Material ResolveActiveBrushMaterial()
+    {
+        if (settings != null && settings.strokeMaterial != null)
+            return settings.strokeMaterial;
+
+        return brushMaterial;
+    }
+
+    private bool UsesParticleDrawingMode(GameObject brushPrefab)
+    {
+        if (brushPrefab == null)
+            return false;
+
+        if (brushPrefab == fireBrushPrefab)
+            return true;
+
+        return settings != null && settings.brushPrefabOverride == brushPrefab && IsParticleOnlyBrushPrefab(brushPrefab);
+    }
+
+    private bool IsParticleOnlyBrushPrefab(GameObject brushPrefab)
+    {
+        if (brushPrefab == null)
+            return false;
+
+        bool hasStrokeComponent = brushPrefab.GetComponent<ProBrushStroke>() != null;
+        bool hasParticleSystem = brushPrefab.GetComponent<ParticleSystem>() != null || brushPrefab.GetComponentInChildren<ParticleSystem>() != null;
+        return !hasStrokeComponent && hasParticleSystem;
+    }
+
+    public void SyncActiveBrushMaterialColor(Color color)
+    {
+        ApplyColorToMaterial(ResolveActiveBrushMaterial(), color);
+    }
+
+    public void SetBrushMaterial(Material material)
+    {
+        if (material == null)
+            return;
+
+        brushMaterial = material;
+
+        if (settings != null)
+        {
+            settings.strokeMaterial = material;
+            SyncActiveBrushMaterialColor(settings.activeColor);
+        }
+    }
+
+    private void ApplyColorToMaterial(Material material, Color color)
+    {
+        if (material == null)
+            return;
+
+        material.color = color;
+
+        if (material.HasProperty("_BaseColor"))
+            material.SetColor("_BaseColor", color);
+
+        if (material.HasProperty("_Color"))
+            material.SetColor("_Color", color);
+
+        if (settings != null && settings.isElectric && material.HasProperty("_EmissionColor"))
+            material.SetColor("_EmissionColor", settings.emissionColor * Mathf.LinearToGammaSpace(settings.emissionIntensity));
+    }
 
     private void ResolveBrushPrefab(string type)
     {
@@ -285,8 +363,10 @@ public class DrawingManager : MonoBehaviour
             FinishActiveStroke();
         }
 
-        // Particle brush (fire) mode
-        if (_activeBrushPrefab == fireBrushPrefab)
+        GameObject activeBrushPrefab = ResolveActiveBrushPrefab();
+
+        // Particle brush mode
+        if (UsesParticleDrawingMode(activeBrushPrefab))
         {
             if (_currentStrokeInstance != null && (!canDraw || isOverUI))
             {
@@ -401,10 +481,11 @@ public class DrawingManager : MonoBehaviour
 
     private void StartStroke()
     {
-        GameObject activePrefab = _activeBrushPrefab != null ? _activeBrushPrefab : (StandardBrushPrefab != null ? StandardBrushPrefab : strokePrefab);
-        if (activePrefab == null || brushTip == null || brushMaterial == null || settings == null)
+        GameObject activePrefab = ResolveActiveBrushPrefab();
+        Material activeMaterial = ResolveActiveBrushMaterial();
+        if (activePrefab == null || brushTip == null || activeMaterial == null || settings == null)
         {
-            Debug.LogWarning("DrawingManager is missing an active brush prefab, brushTip, brushMaterial, or settings.");
+            Debug.LogWarning("DrawingManager is missing an active brush prefab, brushTip, brush material, or settings.");
             return;
         }
 
@@ -431,10 +512,10 @@ public class DrawingManager : MonoBehaviour
                 return;
             }
 
-            Debug.LogWarning("The strokePrefab does not contain a ProBrushStroke or ParticleSystem component.");
+            Debug.LogWarning("The active brush prefab does not contain a ProBrushStroke or ParticleSystem component.");
             return;
         }
-        _activeStroke.Initialize(brushMaterial, settings);
+        _activeStroke.Initialize(activeMaterial, settings);
         SyncParticleToMesh(_currentStrokeInstance);
     }
 
@@ -527,7 +608,7 @@ public class DrawingManager : MonoBehaviour
         MeshRenderer strokeRenderer = _activeStroke.GetComponent<MeshRenderer>();
         if (strokeRenderer != null)
         {
-            strokeRenderer.material.color = settings.activeColor;
+            ApplyColorToMaterial(strokeRenderer.material, settings.activeColor);
 
             if (uiController != null && strokeRenderer.material.HasProperty("_StretchAmount"))
                 strokeRenderer.material.SetFloat("_StretchAmount", uiController.CurrentStretchAmount);
@@ -702,15 +783,21 @@ public class DrawingManager : MonoBehaviour
     // 1. TRIGGER PRESSED (Start)
     public void StartDrawing()
     {
-        GameObject activePrefab = _activeBrushPrefab != null ? _activeBrushPrefab : (StandardBrushPrefab != null ? StandardBrushPrefab : strokePrefab);
+        GameObject activePrefab = ResolveActiveBrushPrefab();
+        Material activeMaterial = ResolveActiveBrushMaterial();
         if (activePrefab == null || brushTip == null)
         {
             Debug.LogWarning("DrawingManager is missing an active brush prefab or brushTip.");
             return;
         }
 
-        // Check if we are using fire or standard
-        _isParticleBrushActive = activePrefab == fireBrushPrefab;
+        // Check whether this resolved prefab should use the continuous particle path.
+        _isParticleBrushActive = UsesParticleDrawingMode(activePrefab);
+        if (!_isParticleBrushActive && (activeMaterial == null || settings == null))
+        {
+            Debug.LogWarning("DrawingManager is missing a brush material or settings.");
+            return;
+        }
 
         _pointHistory.Clear();
         _activeStroke = null;
@@ -734,9 +821,9 @@ public class DrawingManager : MonoBehaviour
         else
         {
             _activeStroke = _currentStrokeInstance.GetComponent<ProBrushStroke>();
-            if (_activeStroke != null && brushMaterial != null && settings != null)
+            if (_activeStroke != null)
             {
-                _activeStroke.Initialize(brushMaterial, settings);
+                _activeStroke.Initialize(activeMaterial, settings);
                 SyncParticleToMesh(_currentStrokeInstance);
             }
         }
@@ -814,16 +901,7 @@ public class DrawingManager : MonoBehaviour
 
     private void SyncBrushMaterialColor(Color color)
     {
-        if (brushMaterial == null)
-            return;
-
-        brushMaterial.color = color;
-
-        if (brushMaterial.HasProperty("_BaseColor"))
-            brushMaterial.SetColor("_BaseColor", color);
-
-        if (brushMaterial.HasProperty("_Color"))
-            brushMaterial.SetColor("_Color", color);
+        SyncActiveBrushMaterialColor(color);
     }
 
     // Optional UI hooks for EventTrigger on Color Picker panel.

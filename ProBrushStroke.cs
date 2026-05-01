@@ -44,7 +44,7 @@ public class ProBrushStroke : MonoBehaviour
 
         var renderer = GetComponent<MeshRenderer>();
         Material dynamicMat = new Material(baseMaterial);
-        dynamicMat.color = settings.activeColor;
+        ApplyBaseColor(dynamicMat, settings.activeColor);
 
         if (dynamicMat.HasProperty("_BaseMap"))
         {
@@ -111,6 +111,20 @@ public class ProBrushStroke : MonoBehaviour
 
         renderer.material = dynamicMat;
         radius = settings.brushRadius;
+    }
+
+    private static void ApplyBaseColor(Material material, Color color)
+    {
+        if (material == null)
+            return;
+
+        material.color = color;
+
+        if (material.HasProperty("_BaseColor"))
+            material.SetColor("_BaseColor", color);
+
+        if (material.HasProperty("_Color"))
+            material.SetColor("_Color", color);
     }
 
     public void EnsureUniqueMaterialInstance()

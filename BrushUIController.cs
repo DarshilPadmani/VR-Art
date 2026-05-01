@@ -327,6 +327,7 @@ public class BrushUIController : MonoBehaviour
 
         // Push the shared settings asset to drawing.
         drawingManager.settings = settings;
+        drawingManager.SyncActiveBrushMaterialColor(settings.activeColor);
 
         if (_previewMaterialInstance != null)
         {
@@ -629,10 +630,16 @@ public class BrushUIController : MonoBehaviour
 
     private void SyncBrushMaterialColor(Color color)
     {
-        if (drawingManager == null || drawingManager.brushMaterial == null)
+        if (drawingManager != null)
+        {
+            drawingManager.SyncActiveBrushMaterialColor(color);
+            return;
+        }
+
+        if (settings == null || settings.strokeMaterial == null)
             return;
 
-        Material material = drawingManager.brushMaterial;
+        Material material = settings.strokeMaterial;
         material.color = color;
 
         if (material.HasProperty("_BaseColor"))
