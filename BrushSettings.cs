@@ -15,6 +15,9 @@ public class BrushSettings : ScriptableObject
     public Material strokeMaterial;
     public GameObject brushPrefabOverride;
 
+    [Header("Placement Mode")]
+    public bool isSingleStampMode = false; // If true, one click = one prefab
+
     [Header("PBR Properties")]
     [Range(0f, 1f)] public float smoothness = 0.5f;
     [Range(0f, 1f)] public float metallic = 0.0f;

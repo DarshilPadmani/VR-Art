@@ -22,6 +22,9 @@ public class MaterialPropertyButton : MonoBehaviour
     public Texture2D targetTexture;
     public Vector2 targetTiling = Vector2.one;
 
+    [Header("Stamp Settings")]
+    public bool useSingleStamp;
+
     [Header("Premium Presets")]
     public bool targetIsElectric;
     public RenderFace targetRenderFace = RenderFace.Front;
@@ -51,6 +54,7 @@ public class MaterialPropertyButton : MonoBehaviour
         settings.brushRadius = targetBrushRadius;
         settings.smoothness = targetSmoothness;
         settings.metallic = targetMetallic;
+        settings.isSingleStampMode = useSingleStamp;
         if (targetStrokeMaterial != null)
             settings.strokeMaterial = targetStrokeMaterial;
         if (targetBrushPrefab != null)

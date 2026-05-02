@@ -55,12 +55,37 @@ public class DrawingHistoryManager : MonoBehaviour
 
     public void ClearAll()
     {
+        HashSet<GameObject> objectsToDestroy = new HashSet<GameObject>();
+
         // Remove all stroke objects currently in the scene.
         ProBrushStroke[] allStrokes = FindObjectsOfType<ProBrushStroke>(true);
         foreach (ProBrushStroke stroke in allStrokes)
         {
             if (stroke != null)
-                Destroy(stroke.gameObject);
+                objectsToDestroy.Add(stroke.gameObject);
+        }
+
+        int drawingLayer = LayerMask.NameToLayer("Drawing");
+        if (drawingLayer >= 0)
+        {
+            Transform[] allTransforms = FindObjectsOfType<Transform>(true);
+            foreach (Transform item in allTransforms)
+            {
+                GameObject obj = item != null ? item.gameObject : null;
+                if (obj == null || obj.layer != drawingLayer)
+                    continue;
+
+                if (obj.transform.parent != null && obj.transform.parent.gameObject.layer == drawingLayer)
+                    continue;
+
+                objectsToDestroy.Add(obj);
+            }
+        }
+
+        foreach (GameObject obj in objectsToDestroy)
+        {
+            if (obj != null)
+                Destroy(obj);
         }
 
         undoStack.Clear();

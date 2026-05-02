@@ -202,6 +202,96 @@ public class DrawingManager : MonoBehaviour
             material.SetColor("_EmissionColor", settings.emissionColor * Mathf.LinearToGammaSpace(settings.emissionIntensity));
     }
 
+    private void ApplyStampMaterial(GameObject stamp)
+    {
+        if (stamp == null || settings == null)
+            return;
+
+        MeshRenderer renderer = stamp.GetComponent<MeshRenderer>();
+        if (renderer == null)
+            renderer = stamp.GetComponentInChildren<MeshRenderer>();
+
+        if (renderer == null)
+            return;
+
+        Material sourceMaterial = ResolveActiveBrushMaterial();
+        if (sourceMaterial == null)
+            sourceMaterial = renderer.sharedMaterial;
+
+        if (sourceMaterial == null)
+            return;
+
+        Material materialInstance = new Material(sourceMaterial);
+        ApplyBrushSettingsToMaterial(materialInstance);
+        renderer.material = materialInstance;
+    }
+
+    private void ApplyBrushSettingsToMaterial(Material material)
+    {
+        if (material == null || settings == null)
+            return;
+
+        ApplyColorToMaterial(material, settings.activeColor);
+
+        if (material.HasProperty("_Metallic"))
+            material.SetFloat("_Metallic", settings.metallic);
+
+        if (material.HasProperty("_Smoothness"))
+            material.SetFloat("_Smoothness", settings.smoothness);
+        else if (material.HasProperty("_Glossiness"))
+            material.SetFloat("_Glossiness", settings.smoothness);
+
+        if (material.HasProperty("_SpecColor"))
+        {
+            if (settings.workflow == WorkflowMode.Specular)
+            {
+                material.SetColor("_SpecColor", Color.white * settings.metallic);
+                material.EnableKeyword("_SPECULAR_SETUP");
+            }
+            else
+            {
+                material.DisableKeyword("_SPECULAR_SETUP");
+            }
+        }
+
+        if (material.HasProperty("_Surface"))
+        {
+            float surfaceValue = settings.surface == SurfaceMode.Transparent ? 1f : 0f;
+            material.SetFloat("_Surface", surfaceValue);
+        }
+
+        if (material.HasProperty("_BaseMap"))
+        {
+            if (settings.HasTexture)
+            {
+                material.SetTexture("_BaseMap", settings.brushTexture);
+                material.SetTextureScale("_BaseMap", settings.tiling);
+                material.EnableKeyword("_USE_TEXTURE_ON");
+            }
+            else
+            {
+                material.SetTexture("_BaseMap", null);
+                material.DisableKeyword("_USE_TEXTURE_ON");
+            }
+        }
+
+        if (settings.isElectric)
+        {
+            material.EnableKeyword("_EMISSION");
+            if (material.HasProperty("_EmissionColor"))
+                material.SetColor("_EmissionColor", settings.emissionColor * Mathf.LinearToGammaSpace(settings.emissionIntensity));
+        }
+        else
+        {
+            material.DisableKeyword("_EMISSION");
+            if (material.HasProperty("_EmissionColor"))
+                material.SetColor("_EmissionColor", Color.black);
+        }
+
+        if (material.HasProperty("_Cull"))
+            material.SetFloat("_Cull", (float)settings.renderFace);
+    }
+
     private void ResolveBrushPrefab(string type)
     {
         switch (type)
@@ -342,6 +432,20 @@ public class DrawingManager : MonoBehaviour
 
             if (triggerValue > 0.5f && canDraw && !isOverUI)
                 PerformErase();
+
+            return;
+        }
+
+        if (settings != null && settings.isSingleStampMode)
+        {
+            if (_activeStroke != null)
+                FinishActiveStroke();
+
+            if (_currentStrokeInstance != null)
+                StopDrawing();
+
+            if (action.WasPressedThisFrame() && canDraw && !isOverUI)
+                SpawnShapeStamp();
 
             return;
         }
@@ -519,6 +623,32 @@ public class DrawingManager : MonoBehaviour
         SyncParticleToMesh(_currentStrokeInstance);
     }
 
+    private void SpawnShapeStamp()
+    {
+        GameObject activePrefab = ResolveActiveBrushPrefab();
+        if (activePrefab == null || brushTip == null || settings == null)
+        {
+            Debug.LogWarning("DrawingManager is missing an active stamp prefab, brushTip, or settings.");
+            return;
+        }
+
+        GameObject stamp = Instantiate(
+            activePrefab,
+            brushTip.position,
+            brushTip.rotation,
+            artworkContainer != null ? artworkContainer : transform);
+
+        // Scale the object based on the current brushRadius
+        float scaleFactor = settings.brushRadius * 20f; 
+        stamp.transform.localScale = Vector3.one * scaleFactor;
+
+        SetLayerRecursively(stamp, LayerMask.NameToLayer("Drawing"));
+        ApplyStampMaterial(stamp);
+
+        if (historyManager != null)
+            historyManager.RecordAction(new StrokeAction(stamp, StrokeActionType.CreateStroke));
+    }
+
     public void UpdateFireBrushSize(float newSize)
     {
         if (_currentStrokeInstance == null)
@@ -596,6 +726,20 @@ public class DrawingManager : MonoBehaviour
             if (child != null)
                 SetLayerRecursively(child.gameObject, layer);
         }
+    }
+
+    private GameObject GetDrawableRootObject(Transform hitTransform)
+    {
+        if (hitTransform == null)
+            return null;
+
+        int drawingLayer = LayerMask.NameToLayer("Drawing");
+        Transform current = hitTransform;
+
+        while (current.parent != null && current.parent.gameObject.layer == drawingLayer)
+            current = current.parent;
+
+        return current.gameObject.layer == drawingLayer ? current.gameObject : null;
     }
 
     private void AddPointToActiveStroke()
@@ -702,10 +846,10 @@ public class DrawingManager : MonoBehaviour
             }
 
             ProBrushStroke stroke = hit.GetComponentInParent<ProBrushStroke>();
-            if (stroke == null)
+            GameObject strokeObject = stroke != null ? stroke.gameObject : GetDrawableRootObject(hitTransform);
+            if (strokeObject == null)
                 continue;
 
-            GameObject strokeObject = stroke.gameObject;
             if (!strokeObject.activeSelf)
                 continue;
 

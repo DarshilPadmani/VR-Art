@@ -683,6 +683,12 @@ public class BrushUIController : MonoBehaviour
 
     public void ClearCanvas()
     {
+        if (drawingManager != null)
+        {
+            drawingManager.ClearAllStrokes();
+            return;
+        }
+
         if (historyManager != null)
             historyManager.ClearAll();
     }
