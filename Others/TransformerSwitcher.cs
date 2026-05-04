@@ -13,7 +13,7 @@ using Oculus.Interaction;
 /// 
 /// Usage:
 /// 1. Assign Grabbable, GrabFreeTransformer, and NonUniformScaleTransformer in Inspector
-/// 2. Long press Button One (Right Controller) to toggle modes
+/// 2. Long press Secondary Button (Button Two) on Right Controller to toggle modes
 /// 3. In Directional Mode, use two hands to scale along specific axis
 /// </summary>
 public class TransformerSwitcher : MonoBehaviour
@@ -104,8 +104,8 @@ public class TransformerSwitcher : MonoBehaviour
 
     private void Update()
     {
-        // Get right controller button input for mode toggle
-        bool isButtonPressed = OVRInput.Get(OVRInput.Button.One, OVRInput.Controller.RTouch);
+        // Get right controller SECONDARY button input for mode toggle (Button Two)
+        bool isButtonPressed = OVRInput.Get(OVRInput.Button.Two, OVRInput.Controller.RTouch);
 
         // ===== MODE TOGGLE LOGIC =====
         // Detect button press start
@@ -581,11 +581,11 @@ public class TransformerSwitcher : MonoBehaviour
         debugInfo += "\n";
 
         // Button Status
-        bool isButtonPressed = OVRInput.Get(OVRInput.Button.One, OVRInput.Controller.RTouch);
-        debugInfo += $"Button: {(isButtonPressed ? "PRESSED" : "RELEASED")}\n";
+        bool isButtonPressed = OVRInput.Get(OVRInput.Button.Two, OVRInput.Controller.RTouch);
+        debugInfo += $"Secondary Button: {(isButtonPressed ? "PRESSED" : "RELEASED")}\n";
         debugInfo += $"Grabbing: {(_isGrabbing ? "YES" : "NO")}\n";
 
-        debugInfo += "\n<color=yellow><i>Long press Btn1 to toggle</i></color>";
+        debugInfo += "\n<color=yellow><i>Long press Secondary Button (Btn2) to toggle</i></color>";
 
         debugUIText.text = debugInfo;
     }
