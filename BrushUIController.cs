@@ -19,7 +19,6 @@ public class BrushUIController : MonoBehaviour
     public Button undoButton;
     public Button redoButton;
     public Button duplicateButton;
-    public Toggle partialEraseToggle;
     public Dropdown shapeDropdown;
     public Slider metallicSlider;
     public Slider smoothnessSlider;
@@ -29,6 +28,10 @@ public class BrushUIController : MonoBehaviour
     [Header("Advanced Rendering")]
     public Toggle emissionToggle;
     public TMP_Dropdown renderFaceDropdown;
+
+    [Header("Eraser Mode")]
+    public Toggle eraserModeToggle;
+    public Toggle erasePartialToggle;
 
     [Header("Brush Size Range")]
     [Min(0f)] public float minBrushRadius = 0.001f;
@@ -78,12 +81,6 @@ public class BrushUIController : MonoBehaviour
         if (duplicateButton != null && selectionManager == null)
         {
             Debug.LogWarning("<color=orange>[Duplicate]</color> SelectionManager is missing, so duplicate button wiring is skipped.");
-        }
-
-        if (partialEraseToggle != null)
-        {
-            partialEraseToggle.isOn = settings != null && settings.eraseOnlyTouchedPoints;
-            partialEraseToggle.onValueChanged.AddListener(SetPartialEraseMode);
         }
 
         if (shapeDropdown != null)
@@ -140,6 +137,18 @@ public class BrushUIController : MonoBehaviour
             renderFaceDropdown.onValueChanged.AddListener(OnRenderFaceChanged);
         }
 
+        if (eraserModeToggle != null)
+        {
+            eraserModeToggle.isOn = settings.isEraserMode;
+            eraserModeToggle.onValueChanged.AddListener(OnEraserModeToggled);
+        }
+
+        if (erasePartialToggle != null)
+        {
+            erasePartialToggle.isOn = settings.eraseOnlyTouchedPoints;
+            erasePartialToggle.onValueChanged.AddListener(OnErasePartialToggled);
+        }
+
         if (colorPreviewDisplay != null && colorPreviewDisplay.material != null)
         {
             // Create one runtime instance and share it across preview targets.
@@ -177,11 +186,14 @@ public class BrushUIController : MonoBehaviour
         if (emissionToggle != null)
             emissionToggle.SetIsOnWithoutNotify(settings.isElectric);
 
-        if (partialEraseToggle != null)
-            partialEraseToggle.SetIsOnWithoutNotify(settings.eraseOnlyTouchedPoints);
-
         if (renderFaceDropdown != null)
             renderFaceDropdown.SetValueWithoutNotify(MapRenderFaceToDropdown(settings.renderFace));
+
+        if (eraserModeToggle != null)
+            eraserModeToggle.SetIsOnWithoutNotify(settings.isEraserMode);
+
+        if (erasePartialToggle != null)
+            erasePartialToggle.SetIsOnWithoutNotify(settings.eraseOnlyTouchedPoints);
 
         UpdateStretchAmount();
 
@@ -389,6 +401,12 @@ public class BrushUIController : MonoBehaviour
         if (renderFaceDropdown != null)
             renderFaceDropdown.SetValueWithoutNotify(MapRenderFaceToDropdown(settings.renderFace));
 
+        if (eraserModeToggle != null)
+            eraserModeToggle.SetIsOnWithoutNotify(settings.isEraserMode);
+
+        if (erasePartialToggle != null)
+            erasePartialToggle.SetIsOnWithoutNotify(settings.eraseOnlyTouchedPoints);
+
         if (shapeDropdown != null)
         {
             EnsureShapeDropdownOptions();
@@ -409,14 +427,6 @@ public class BrushUIController : MonoBehaviour
     public void OnSmoothnessChanged(float value)
     {
         settings.smoothness = Mathf.Clamp01(value);
-    }
-
-    public void SetPartialEraseMode(bool isPartialErase)
-    {
-        if (settings == null)
-            return;
-
-        settings.eraseOnlyTouchedPoints = isPartialErase;
     }
 
     public void OnWorkflowChanged(int index)
@@ -709,5 +719,17 @@ public class BrushUIController : MonoBehaviour
 
         if (historyManager != null)
             historyManager.ClearAll();
+    }
+
+    public void OnEraserModeToggled(bool isEnabled)
+    {
+        settings.isEraserMode = isEnabled;
+        Debug.Log($"<color=cyan>[Eraser]</color> Eraser Mode: {(isEnabled ? "ON" : "OFF")}");
+    }
+
+    public void OnErasePartialToggled(bool isEnabled)
+    {
+        settings.eraseOnlyTouchedPoints = isEnabled;
+        Debug.Log($"<color=cyan>[Eraser]</color> Partial Erase: {(isEnabled ? "Partial" : "Full")}");
     }
 }

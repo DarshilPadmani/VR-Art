@@ -5,21 +5,70 @@ using System.Collections.Generic;
 
 public class DrawingManager : MonoBehaviour
 {
+    public enum ToolMode { Draw, Erase }
+
     [Header("Setup")]
     public GameObject strokePrefab;
+
+    [Header("Brush Library")]
+    public GameObject standardBrushPrefab;
+    [Tooltip("Legacy fallback for scenes that still assign the old standardPrefab field.")]
+    public GameObject standardPrefab;
+    public GameObject fireBrushPrefab;
+    public GameObject sparkleBrushPrefab;
     public Transform brushTip; // The point on your right controller
     public Material brushMaterial;
+    [Tooltip("Parent transform for all generated strokes. If null, strokes are parented under this object.")]
+    public Transform artworkContainer;
 
     [Header("Input Actions")]
     public InputActionProperty drawAction; // Map to Right Controller Trigger/Press
+    public InputActionProperty undoAction; // Map to Left Controller X / primary button
+    public InputActionProperty redoAction; // Map to Left Controller Y / secondary button
+    [Tooltip("Map to <XRController>{RightHand}/primary2DAxis for brush size changes.")]
+    public InputActionProperty sizeChangeAction;
     [Tooltip("If drawAction is not assigned, use Meta right joystick click as fallback.")]
     public bool useFallbackRightJoystickClick = true;
+    [Tooltip("If undo/redo actions are not assigned, use Meta left X/Y buttons as fallback.")]
+    public bool useFallbackUndoRedoButtons = true;
+
+    [Header("Joystick Size Control")]
+    [Range(0.1f, 2f)] public float sizeSensitivity = 0.8f;
+    public BrushUIController uiController;
+
+    [Header("Current State")]
+    [SerializeField] private GameObject _activeBrushPrefab;
+
+    private GameObject _currentStrokeInstance;
+    private ParticleSystem _currentPS; // Cache for efficiency
+    private bool _isParticleBrushActive = false;
+    public UnityEngine.UI.Slider brushSizeSlider;
 
     [Header("Shared Settings")]
     public BrushSettings settings;
+    public DrawingHistoryManager historyManager;
+    public SelectionManager selectionManager;
+
+    [Header("Tool Mode")]
+    public ToolMode currentTool = ToolMode.Draw;
+
+    [Header("Eraser")]
+    public GameObject eraserVisual;
+    [Min(0f)] public float eraserRadiusMultiplier = 1f;
+    public LayerMask eraseLayerMask = ~0;
+    public QueryTriggerInteraction eraseTriggerInteraction = QueryTriggerInteraction.Ignore;
+
+    [Header("Spray")]
+    public ParticleSystem sprayParticleSystem;
+    [Min(1f)] public float sprayEmissionRate = 45f;
 
     [Header("UI Interaction")]
     public EventSystem eventSystem;
+    [Tooltip("Hard switch that can disable drawing from UI events (e.g. Color Picker PointerEnter/Exit).")]
+    public bool canDraw = true;
+
+    [Header("Debug")]
+    public bool enableFireDebugLogs = false;
 
     [Header("Smoothing")]
     [Min(1)] public int smoothingWindowSize = 6;
@@ -27,11 +76,25 @@ public class DrawingManager : MonoBehaviour
     private ProBrushStroke _activeStroke;
     private readonly List<Vector3> _pointHistory = new List<Vector3>();
     private InputAction _fallbackDrawAction;
+    private InputAction _fallbackUndoAction;
+    private InputAction _fallbackRedoAction;
+    private MeshModifyAction _activeEraseAction;
+    private readonly Collider[] _eraseHits = new Collider[64];
+    private float _sprayAccumulator;
 
     private InputAction ActiveDrawAction => drawAction.action != null ? drawAction.action : _fallbackDrawAction;
+    private InputAction ActiveUndoAction => undoAction.action != null ? undoAction.action : _fallbackUndoAction;
+    private InputAction ActiveRedoAction => redoAction.action != null ? redoAction.action : _fallbackRedoAction;
+    private InputAction ActiveSizeChangeAction => sizeChangeAction.action;
 
     private void Awake()
     {
+        if (selectionManager == null)
+            selectionManager = FindObjectOfType<SelectionManager>();
+
+        if (_activeBrushPrefab == null)
+            ResolveBrushPrefab("standard");
+
         if (drawAction.action == null && useFallbackRightJoystickClick)
         {
             _fallbackDrawAction = new InputAction(
@@ -39,72 +102,653 @@ public class DrawingManager : MonoBehaviour
                 InputActionType.Button,
                 "<XRController>{RightHand}/primary2DAxisClick");
         }
+
+        if (useFallbackUndoRedoButtons)
+        {
+            if (undoAction.action == null)
+            {
+                _fallbackUndoAction = new InputAction(
+                    "Undo",
+                    InputActionType.Button,
+                    "<XRController>{LeftHand}/primaryButton");
+            }
+
+            if (redoAction.action == null)
+            {
+                _fallbackRedoAction = new InputAction(
+                    "Redo",
+                    InputActionType.Button,
+                    "<XRController>{LeftHand}/secondaryButton");
+            }
+        }
+    }
+
+    private GameObject StandardBrushPrefab => standardBrushPrefab != null ? standardBrushPrefab : standardPrefab;
+    public GameObject ActiveBrushPrefab => ResolveActiveBrushPrefab();
+    public Material ActiveBrushMaterial => ResolveActiveBrushMaterial();
+
+    private GameObject ResolveActiveBrushPrefab()
+    {
+        if (settings != null && settings.brushPrefabOverride != null)
+            return settings.brushPrefabOverride;
+
+        if (_activeBrushPrefab != null)
+            return _activeBrushPrefab;
+
+        return StandardBrushPrefab != null ? StandardBrushPrefab : strokePrefab;
+    }
+
+    private Material ResolveActiveBrushMaterial()
+    {
+        if (settings != null && settings.strokeMaterial != null)
+            return settings.strokeMaterial;
+
+        return brushMaterial;
+    }
+
+    private bool UsesParticleDrawingMode(GameObject brushPrefab)
+    {
+        if (brushPrefab == null)
+            return false;
+
+        if (brushPrefab == fireBrushPrefab)
+            return true;
+
+        return settings != null && settings.brushPrefabOverride == brushPrefab && IsParticleOnlyBrushPrefab(brushPrefab);
+    }
+
+    private bool IsParticleOnlyBrushPrefab(GameObject brushPrefab)
+    {
+        if (brushPrefab == null)
+            return false;
+
+        bool hasStrokeComponent = brushPrefab.GetComponent<ProBrushStroke>() != null;
+        bool hasParticleSystem = brushPrefab.GetComponent<ParticleSystem>() != null || brushPrefab.GetComponentInChildren<ParticleSystem>() != null;
+        return !hasStrokeComponent && hasParticleSystem;
+    }
+
+    public void SyncActiveBrushMaterialColor(Color color)
+    {
+        ApplyColorToMaterial(ResolveActiveBrushMaterial(), color);
+    }
+
+    public void SetBrushMaterial(Material material)
+    {
+        if (material == null)
+            return;
+
+        brushMaterial = material;
+
+        if (settings != null)
+        {
+            settings.strokeMaterial = material;
+            SyncActiveBrushMaterialColor(settings.activeColor);
+        }
+    }
+
+    private void ApplyColorToMaterial(Material material, Color color)
+    {
+        if (material == null)
+            return;
+
+        material.color = color;
+
+        if (material.HasProperty("_BaseColor"))
+            material.SetColor("_BaseColor", color);
+
+        if (material.HasProperty("_Color"))
+            material.SetColor("_Color", color);
+
+        if (settings != null && settings.isElectric && material.HasProperty("_EmissionColor"))
+            material.SetColor("_EmissionColor", settings.emissionColor * Mathf.LinearToGammaSpace(settings.emissionIntensity));
+    }
+
+    private void ApplyStampMaterial(GameObject stamp)
+    {
+        if (stamp == null || settings == null)
+            return;
+
+        MeshRenderer renderer = stamp.GetComponent<MeshRenderer>();
+        if (renderer == null)
+            renderer = stamp.GetComponentInChildren<MeshRenderer>();
+
+        if (renderer == null)
+            return;
+
+        Material sourceMaterial = ResolveActiveBrushMaterial();
+        if (sourceMaterial == null)
+            sourceMaterial = renderer.sharedMaterial;
+
+        if (sourceMaterial == null)
+            return;
+
+        Material materialInstance = new Material(sourceMaterial);
+        ApplyBrushSettingsToMaterial(materialInstance);
+        renderer.material = materialInstance;
+    }
+
+    private void ApplyBrushSettingsToMaterial(Material material)
+    {
+        if (material == null || settings == null)
+            return;
+
+        ApplyColorToMaterial(material, settings.activeColor);
+
+        if (material.HasProperty("_Metallic"))
+            material.SetFloat("_Metallic", settings.metallic);
+
+        if (material.HasProperty("_Smoothness"))
+            material.SetFloat("_Smoothness", settings.smoothness);
+        else if (material.HasProperty("_Glossiness"))
+            material.SetFloat("_Glossiness", settings.smoothness);
+
+        if (material.HasProperty("_SpecColor"))
+        {
+            if (settings.workflow == WorkflowMode.Specular)
+            {
+                material.SetColor("_SpecColor", Color.white * settings.metallic);
+                material.EnableKeyword("_SPECULAR_SETUP");
+            }
+            else
+            {
+                material.DisableKeyword("_SPECULAR_SETUP");
+            }
+        }
+
+        if (material.HasProperty("_Surface"))
+        {
+            float surfaceValue = settings.surface == SurfaceMode.Transparent ? 1f : 0f;
+            material.SetFloat("_Surface", surfaceValue);
+        }
+
+        if (material.HasProperty("_BaseMap"))
+        {
+            if (settings.HasTexture)
+            {
+                material.SetTexture("_BaseMap", settings.brushTexture);
+                material.SetTextureScale("_BaseMap", settings.tiling);
+                material.EnableKeyword("_USE_TEXTURE_ON");
+            }
+            else
+            {
+                material.SetTexture("_BaseMap", null);
+                material.DisableKeyword("_USE_TEXTURE_ON");
+            }
+        }
+
+        if (settings.isElectric)
+        {
+            material.EnableKeyword("_EMISSION");
+            if (material.HasProperty("_EmissionColor"))
+                material.SetColor("_EmissionColor", settings.emissionColor * Mathf.LinearToGammaSpace(settings.emissionIntensity));
+        }
+        else
+        {
+            material.DisableKeyword("_EMISSION");
+            if (material.HasProperty("_EmissionColor"))
+                material.SetColor("_EmissionColor", Color.black);
+        }
+
+        if (material.HasProperty("_Cull"))
+            material.SetFloat("_Cull", (float)settings.renderFace);
+    }
+
+    private void ResolveBrushPrefab(string type)
+    {
+        switch (type)
+        {
+            case "fire":
+                _activeBrushPrefab = fireBrushPrefab != null ? fireBrushPrefab : StandardBrushPrefab != null ? StandardBrushPrefab : strokePrefab;
+                break;
+            case "sparkle":
+                _activeBrushPrefab = sparkleBrushPrefab != null ? sparkleBrushPrefab : StandardBrushPrefab != null ? StandardBrushPrefab : strokePrefab;
+                break;
+            case "standard":
+            default:
+                _activeBrushPrefab = StandardBrushPrefab != null ? StandardBrushPrefab : strokePrefab;
+                break;
+        }
+    }
+
+    private void SetActiveBrushPrefab(GameObject brushPrefab, string label)
+    {
+        _activeBrushPrefab = brushPrefab != null ? brushPrefab : StandardBrushPrefab != null ? StandardBrushPrefab : strokePrefab;
+        Debug.Log($"<color=cyan>[Brush]</color> Switched to: {label}");
+    }
+
+    public void ChangeBrushType(string type)
+    {
+        string normalizedType = string.IsNullOrWhiteSpace(type) ? "standard" : type.Trim().ToLowerInvariant();
+
+        switch (normalizedType)
+        {
+            case "fire":
+                SetBrushFire();
+                break;
+            case "sparkle":
+            case "ice":
+                SetBrushSparkle();
+                break;
+            case "standard":
+            default:
+                SetBrushStandard();
+                break;
+        }
+    }
+
+    public void SetBrushStandard()
+    {
+        SetActiveBrushPrefab(StandardBrushPrefab, "standard");
+    }
+
+    public void SetBrushToStandard()
+    {
+        SetBrushStandard();
+    }
+
+    public void SetBrushFire()
+    {
+        SetActiveBrushPrefab(fireBrushPrefab, "fire");
+    }
+
+    public void SetBrushToFire()
+    {
+        SetBrushFire();
+    }
+
+    public void SetBrushSparkle()
+    {
+        SetActiveBrushPrefab(sparkleBrushPrefab, "sparkle");
+    }
+
+    public void SetBrushToSparkle()
+    {
+        SetBrushSparkle();
     }
 
     private void OnEnable()
     {
         if (ActiveDrawAction != null)
             ActiveDrawAction.Enable();
+        if (ActiveUndoAction != null)
+            ActiveUndoAction.Enable();
+        if (ActiveRedoAction != null)
+            ActiveRedoAction.Enable();
+        if (ActiveSizeChangeAction != null)
+            ActiveSizeChangeAction.Enable();
     }
 
     private void OnDisable()
     {
         if (ActiveDrawAction != null)
             ActiveDrawAction.Disable();
+        if (ActiveUndoAction != null)
+            ActiveUndoAction.Disable();
+        if (ActiveRedoAction != null)
+            ActiveRedoAction.Disable();
+        if (ActiveSizeChangeAction != null)
+            ActiveSizeChangeAction.Disable();
     }
 
     private void OnDestroy()
     {
         if (_fallbackDrawAction != null)
             _fallbackDrawAction.Dispose();
+        if (_fallbackUndoAction != null)
+            _fallbackUndoAction.Dispose();
+        if (_fallbackRedoAction != null)
+            _fallbackRedoAction.Dispose();
     }
 
     void Update()
     {
+        UpdateBrushTipVisualScale();
+
         InputAction action = ActiveDrawAction;
+        InputAction undo = ActiveUndoAction;
+        InputAction redo = ActiveRedoAction;
+
+        if (undo != null && undo.WasPressedThisFrame())
+            UndoLastStroke();
+        if (redo != null && redo.WasPressedThisFrame())
+            RedoLastStroke();
+
+        HandleJoystickSizeChange();
+
         if (action == null)
             return;
 
         // Read the trigger value directly so analog trigger input is handled consistently.
         float triggerValue = action.ReadValue<float>();
-        bool isOverUI = eventSystem != null && eventSystem.IsPointerOverGameObject(-1);
+        EventSystem activeEventSystem = eventSystem != null ? eventSystem : EventSystem.current;
+        bool isOverUI = activeEventSystem != null && activeEventSystem.IsPointerOverGameObject(-1);
 
-        // Start drawing if trigger is pressed more than halfway and pointer is not on UI.
-        if (triggerValue > 0.5f && _activeStroke == null && !isOverUI)
+        UpdateEraserVisual();
+
+        // Erase mode: hold trigger to remove any stroke touching the brush tip volume.
+        if (currentTool == ToolMode.Erase)
+        {
+            if (_activeStroke != null)
+                FinishActiveStroke();
+
+            if (triggerValue > 0.5f && canDraw && !isOverUI)
+                PerformErase();
+            else if (action.WasReleasedThisFrame() && _activeEraseAction != null)
+            {
+                // When eraser trigger is released, save the final state to history
+                _activeEraseAction.CaptureStateAfter();
+                if (historyManager != null)
+                    historyManager.RecordAction(_activeEraseAction);
+                _activeEraseAction = null;
+            }
+
+            return;
+        }
+
+        if (settings != null && settings.isSingleStampMode)
+        {
+            if (_activeStroke != null)
+                FinishActiveStroke();
+
+            if (_currentStrokeInstance != null)
+                StopDrawing();
+
+            if (action.WasPressedThisFrame() && canDraw && !isOverUI)
+                SpawnShapeStamp();
+
+            return;
+        }
+
+        if (settings != null && settings.activeShape == BrushSettings.BrushShape.Spray)
+        {
+            if (_activeStroke != null)
+                FinishActiveStroke();
+
+            if (triggerValue > 0.5f && canDraw && !isOverUI)
+                EmitSpray();
+
+            return;
+        }
+
+        // If UI has explicitly disabled drawing, end the active stroke immediately.
+        if (!canDraw && _activeStroke != null)
+        {
+            FinishActiveStroke();
+        }
+
+        GameObject activeBrushPrefab = ResolveActiveBrushPrefab();
+
+        // Particle brush mode
+        if (UsesParticleDrawingMode(activeBrushPrefab))
+        {
+            if (_currentStrokeInstance != null && (!canDraw || isOverUI))
+            {
+                StopDrawing();
+                return;
+            }
+
+            // TRIGGER PRESSED - start drawing
+            if (triggerValue > 0.5f && canDraw && !isOverUI && _currentStrokeInstance == null)
+            {
+                StartDrawing();
+            }
+            // TRIGGER HELD - update drawing
+            else if (triggerValue > 0.5f && canDraw && _currentStrokeInstance != null)
+            {
+                UpdateDrawing();
+            }
+            // TRIGGER RELEASED - stop drawing
+            else if (triggerValue < 0.1f && _currentStrokeInstance != null)
+            {
+                StopDrawing();
+            }
+            // Extra safety for digital button-style bindings
+            if (action.WasReleasedThisFrame() && _currentStrokeInstance != null)
+            {
+                StopDrawing();
+            }
+            return;
+        }
+
+        // Standard brush mode (LineRenderer based)
+        bool isFireStrokeActive = _currentStrokeInstance != null && _activeStroke == null && GetStrokeParticleSystem(_currentStrokeInstance) != null;
+
+        if (isFireStrokeActive)
+        {
+            if (triggerValue > 0.5f && canDraw && !isOverUI)
+            {
+                UpdateFireBrushPosition();
+                return;
+            }
+
+            if (triggerValue < 0.1f || !canDraw)
+            {
+                FinishActiveStroke();
+                return;
+            }
+        }
+
+        // Standard line renderer drawing
+        if (triggerValue > 0.5f && _activeStroke == null && canDraw && !isOverUI)
         {
             StartStroke();
         }
-
-        // Continue drawing.
-        else if (triggerValue > 0.5f && _activeStroke != null)
+        else if (triggerValue > 0.5f && _activeStroke != null && canDraw)
         {
             AddPointToActiveStroke();
         }
-
-        // Stop drawing.
         else if (triggerValue < 0.1f && _activeStroke != null)
         {
-            _activeStroke = null;
+            FinishActiveStroke();
         }
+
+        if (action.WasReleasedThisFrame() && _activeStroke != null)
+        {
+            FinishActiveStroke();
+        }
+    }
+
+    private void HandleJoystickSizeChange()
+    {
+        InputAction sizeAction = ActiveSizeChangeAction;
+        if (sizeAction == null || uiController == null)
+            return;
+
+        Vector2 joystickInput = sizeAction.ReadValue<Vector2>();
+        if (Mathf.Abs(joystickInput.x) <= 0.1f)
+            return;
+
+        float changeAmount = joystickInput.x * Time.deltaTime * sizeSensitivity;
+        uiController.AdjustSliderValue(changeAmount);
+    }
+
+    private void UpdateBrushTipVisualScale()
+    {
+        if (brushTip == null || settings == null)
+            return;
+
+        // Convert brush radius to visual diameter for the tip sphere scale.
+        float visualScale = settings.brushRadius * 2f;
+        brushTip.localScale = Vector3.one * visualScale;
+    }
+
+    private void EmitSpray()
+    {
+        if (brushTip == null)
+            return;
+
+        if (sprayParticleSystem == null)
+            sprayParticleSystem = brushTip.GetComponentInChildren<ParticleSystem>();
+
+        if (sprayParticleSystem == null)
+            return;
+
+        _sprayAccumulator += sprayEmissionRate * Time.deltaTime;
+        int emitCount = Mathf.FloorToInt(_sprayAccumulator);
+        if (emitCount <= 0)
+            return;
+
+        _sprayAccumulator -= emitCount;
+        sprayParticleSystem.Emit(emitCount);
     }
 
     private void StartStroke()
     {
-        if (strokePrefab == null || brushTip == null || brushMaterial == null || settings == null)
+        GameObject activePrefab = ResolveActiveBrushPrefab();
+        Material activeMaterial = ResolveActiveBrushMaterial();
+        if (activePrefab == null || brushTip == null || activeMaterial == null || settings == null)
         {
-            Debug.LogWarning("DrawingManager is missing strokePrefab, brushTip, brushMaterial, or settings.");
+            Debug.LogWarning("DrawingManager is missing an active brush prefab, brushTip, brush material, or settings.");
             return;
         }
 
         _pointHistory.Clear();
-        GameObject strokeObj = Instantiate(strokePrefab, Vector3.zero, Quaternion.identity);
-        _activeStroke = strokeObj.GetComponent<ProBrushStroke>();
+        _currentStrokeInstance = Instantiate(activePrefab, brushTip.position, brushTip.rotation, artworkContainer != null ? artworkContainer : transform);
+
+        // Parent every stroke under a shared container for clean hierarchy management.
+        SetLayerRecursively(_currentStrokeInstance, LayerMask.NameToLayer("Drawing"));
+
+        _activeStroke = _currentStrokeInstance.GetComponent<ProBrushStroke>();
         if (_activeStroke == null)
         {
-            Debug.LogWarning("The strokePrefab does not contain a ProBrushStroke component.");
+            _activeStroke = null;
+
+            ParticleSystem particleSystem = GetStrokeParticleSystem(_currentStrokeInstance);
+            if (particleSystem != null)
+            {
+                UpdateFireBrushSize(settings.brushRadius);
+                particleSystem.Play(true);
+
+                if (enableFireDebugLogs)
+                    Debug.Log($"<color=orange>[Fire]</color> Start stroke at {brushTip.position}");
+
+                return;
+            }
+
+            Debug.LogWarning("The active brush prefab does not contain a ProBrushStroke or ParticleSystem component.");
             return;
         }
-        _activeStroke.Initialize(brushMaterial, settings);
+        _activeStroke.Initialize(activeMaterial, settings);
+        SyncParticleToMesh(_currentStrokeInstance);
+    }
+
+    private void SpawnShapeStamp()
+    {
+        GameObject activePrefab = ResolveActiveBrushPrefab();
+        if (activePrefab == null || brushTip == null || settings == null)
+        {
+            Debug.LogWarning("DrawingManager is missing an active stamp prefab, brushTip, or settings.");
+            return;
+        }
+
+        GameObject stamp = Instantiate(
+            activePrefab,
+            brushTip.position,
+            brushTip.rotation,
+            artworkContainer != null ? artworkContainer : transform);
+
+        // Scale the object based on the current brushRadius
+        float scaleFactor = settings.brushRadius * 20f; 
+        stamp.transform.localScale = Vector3.one * scaleFactor;
+
+        SetLayerRecursively(stamp, LayerMask.NameToLayer("Drawing"));
+        ApplyStampMaterial(stamp);
+
+        if (historyManager != null)
+            historyManager.RecordAction(new StrokeAction(stamp, StrokeActionType.CreateStroke));
+    }
+
+    public void UpdateFireBrushSize(float newSize)
+    {
+        if (_currentStrokeInstance == null)
+            return;
+
+        ParticleSystem particleSystem = GetStrokeParticleSystem(_currentStrokeInstance);
+        if (particleSystem == null)
+            return;
+
+        ParticleSystem.MainModule main = particleSystem.main;
+        main.startSize = new ParticleSystem.MinMaxCurve(newSize);
+        main.startSpeed = new ParticleSystem.MinMaxCurve(newSize * 2f);
+    }
+
+    private void UpdateFireBrushPosition()
+    {
+        if (_currentStrokeInstance == null)
+            return;
+
+        ParticleSystem particleSystem = GetStrokeParticleSystem(_currentStrokeInstance);
+        if (particleSystem == null)
+            return;
+
+        _currentStrokeInstance.transform.position = brushTip.position;
+        _currentStrokeInstance.transform.rotation = brushTip.rotation;
+
+        if (settings != null)
+            UpdateFireBrushSize(settings.brushRadius);
+
+        if (particleSystem.isStopped)
+            particleSystem.Play(true);
+
+        if (enableFireDebugLogs && Time.frameCount % 60 == 0)
+            Debug.Log($"<color=orange>[Fire]</color> Following tip at {brushTip.position}");
+    }
+
+    private ParticleSystem GetStrokeParticleSystem(GameObject strokeInstance)
+    {
+        if (strokeInstance == null)
+            return null;
+
+        ParticleSystem particleSystem = strokeInstance.GetComponent<ParticleSystem>();
+        if (particleSystem != null)
+            return particleSystem;
+
+        return strokeInstance.GetComponentInChildren<ParticleSystem>();
+    }
+
+    private void SyncParticleToMesh(GameObject strokeObject)
+    {
+        MeshFilter mf = strokeObject.GetComponent<MeshFilter>();
+        if (mf == null || mf.sharedMesh == null)
+            return;
+
+        ParticleSystem ps = strokeObject.GetComponent<ParticleSystem>();
+        if (ps == null)
+            return;
+
+        var shape = ps.shape;
+        shape.shapeType = ParticleSystemShapeType.Mesh;
+        shape.mesh = mf.sharedMesh;
+
+        Debug.Log("<color=cyan>[Sync]</color> Particles now emitting from the drawing mesh.");
+    }
+
+    private void SetLayerRecursively(GameObject target, int layer)
+    {
+        if (target == null || layer < 0)
+            return;
+
+        target.layer = layer;
+
+        foreach (Transform child in target.transform)
+        {
+            if (child != null)
+                SetLayerRecursively(child.gameObject, layer);
+        }
+    }
+
+    private GameObject GetDrawableRootObject(Transform hitTransform)
+    {
+        if (hitTransform == null)
+            return null;
+
+        int drawingLayer = LayerMask.NameToLayer("Drawing");
+        Transform current = hitTransform;
+
+        while (current.parent != null && current.parent.gameObject.layer == drawingLayer)
+            current = current.parent;
+
+        return current.gameObject.layer == drawingLayer ? current.gameObject : null;
     }
 
     private void AddPointToActiveStroke()
@@ -116,9 +760,258 @@ public class DrawingManager : MonoBehaviour
         _activeStroke.radius = settings.brushRadius;
         MeshRenderer strokeRenderer = _activeStroke.GetComponent<MeshRenderer>();
         if (strokeRenderer != null)
-            strokeRenderer.material.color = settings.activeColor;
+        {
+            ApplyColorToMaterial(strokeRenderer.material, settings.activeColor);
+
+            if (uiController != null && strokeRenderer.material.HasProperty("_StretchAmount"))
+                strokeRenderer.material.SetFloat("_StretchAmount", uiController.CurrentStretchAmount);
+        }
 
         _activeStroke.AddPoint(brushTip.position, brushTip.rotation);
+        SyncParticleToMesh(_currentStrokeInstance);
+    }
+
+    private void FinishActiveStroke()
+    {
+        if (_currentStrokeInstance == null)
+            return;
+
+        if (_activeStroke == null)
+        {
+            ParticleSystem particleSystem = GetStrokeParticleSystem(_currentStrokeInstance);
+            if (particleSystem != null)
+                particleSystem.Stop(true, ParticleSystemStopBehavior.StopEmitting);
+
+            _currentStrokeInstance = null;
+            return;
+        }
+
+        _activeStroke.FinalizeStrokeCollider();
+        SyncParticleToMesh(_currentStrokeInstance);
+
+        if (historyManager != null)
+            historyManager.RecordAction(new StrokeAction(_activeStroke.gameObject, StrokeActionType.CreateStroke));
+
+        _activeStroke = null;
+        _currentStrokeInstance = null;
+    }
+
+    public void UndoLastStroke()
+    {
+        if (historyManager != null)
+            historyManager.Undo();
+    }
+
+    public void RedoLastStroke()
+    {
+        if (historyManager != null)
+            historyManager.Redo();
+    }
+
+    public void ClearAllStrokes()
+    {
+        if (selectionManager != null)
+            selectionManager.ClearSelection();
+
+        if (selectionManager != null)
+            selectionManager.ClearAllContainers();
+
+        if (historyManager != null)
+            historyManager.ClearAll();
+
+        _activeStroke = null;
+        _currentStrokeInstance = null;
+        _currentPS = null;
+        _isParticleBrushActive = false;
+    }
+
+    private void PerformErase()
+    {
+        if (brushTip == null || settings == null)
+            return;
+
+        // Ensure the radius is large enough to actually hit the tube vertices.
+        float eraserRadius = settings.brushRadius * Mathf.Max(0f, eraserRadiusMultiplier);
+        eraserRadius *= 1.5f;
+        if (eraserRadius <= 0f)
+            return;
+
+        int hitCount = Physics.OverlapSphereNonAlloc(
+            brushTip.position,
+            eraserRadius,
+            _eraseHits,
+            eraseLayerMask,
+            eraseTriggerInteraction);
+
+        for (int i = 0; i < hitCount; i++)
+        {
+            ProBrushStroke stroke = _eraseHits[i].GetComponentInParent<ProBrushStroke>();
+            if (stroke == null)
+                continue;
+
+            if (settings.eraseOnlyTouchedPoints)
+            {
+                if (_activeEraseAction == null && historyManager != null)
+                    _activeEraseAction = new MeshModifyAction(stroke);
+
+                stroke.EraseAtPosition(brushTip.position, eraserRadius);
+            }
+            else
+            {
+                if (historyManager != null)
+                    historyManager.RecordAction(new StrokeAction(stroke.gameObject, StrokeActionType.DeleteStroke));
+
+                stroke.gameObject.SetActive(false);
+            }
+        }
+    }
+
+    private void UpdateEraserVisual()
+    {
+        if (eraserVisual == null)
+            return;
+
+        bool show = currentTool == ToolMode.Erase;
+        if (eraserVisual.activeSelf != show)
+            eraserVisual.SetActive(show);
+
+        if (!show || brushTip == null || settings == null)
+            return;
+
+        eraserVisual.transform.SetPositionAndRotation(brushTip.position, brushTip.rotation);
+        float diameter = settings.brushRadius * Mathf.Max(0f, eraserRadiusMultiplier) * 2f;
+        eraserVisual.transform.localScale = Vector3.one * diameter;
+    }
+
+    public void SetEraserMode(bool isErasing)
+    {
+        currentTool = isErasing ? ToolMode.Erase : ToolMode.Draw;
+        Debug.Log("Switched to: " + currentTool);
+    }
+
+    // UI Button helper: 0 = Draw, 1 = Erase
+    public void SetToolMode(int modeIndex)
+    {
+        if (modeIndex <= 0)
+            currentTool = ToolMode.Draw;
+        else
+            currentTool = ToolMode.Erase;
+
+        Debug.Log("Switched to: " + currentTool);
+    }
+
+    // Checkbox helper: checked = draw, unchecked = erase
+    public void SetDrawModeActive(bool isDrawActive)
+    {
+        currentTool = isDrawActive ? ToolMode.Draw : ToolMode.Erase;
+        Debug.Log("Switched to: " + currentTool);
+    }
+
+    public void SetDrawMode()
+    {
+        SetEraserMode(false);
+    }
+
+    // UI Toggle/Checkbox helper: true = Draw, false = Erase
+    public void SetDrawMode(bool isDrawing)
+    {
+        currentTool = isDrawing ? ToolMode.Draw : ToolMode.Erase;
+        Debug.Log("Switched to: " + currentTool);
+    }
+
+    public void SetEraseMode()
+    {
+        SetEraserMode(true);
+    }
+
+    // 1. TRIGGER PRESSED (Start)
+    public void StartDrawing()
+    {
+        GameObject activePrefab = ResolveActiveBrushPrefab();
+        Material activeMaterial = ResolveActiveBrushMaterial();
+        if (activePrefab == null || brushTip == null)
+        {
+            Debug.LogWarning("DrawingManager is missing an active brush prefab or brushTip.");
+            return;
+        }
+
+        // Check whether this resolved prefab should use the continuous particle path.
+        _isParticleBrushActive = UsesParticleDrawingMode(activePrefab);
+        if (!_isParticleBrushActive && (activeMaterial == null || settings == null))
+        {
+            Debug.LogWarning("DrawingManager is missing a brush material or settings.");
+            return;
+        }
+
+        _pointHistory.Clear();
+        _activeStroke = null;
+        _currentStrokeInstance = Instantiate(activePrefab, brushTip.position, brushTip.rotation, artworkContainer != null ? artworkContainer : transform);
+        SetLayerRecursively(_currentStrokeInstance, LayerMask.NameToLayer("Drawing"));
+
+        if (_isParticleBrushActive)
+        {
+            _currentPS = GetStrokeParticleSystem(_currentStrokeInstance);
+            if (_currentPS == null)
+                return;
+
+            // Set initial size from slider
+            var main = _currentPS.main;
+            main.startSize = brushSizeSlider != null ? brushSizeSlider.value : settings != null ? settings.brushRadius : main.startSize.constant;
+
+            var emission = _currentPS.emission;
+            emission.enabled = true;
+            _currentPS.Play(true);
+        }
+        else
+        {
+            _activeStroke = _currentStrokeInstance.GetComponent<ProBrushStroke>();
+            if (_activeStroke != null)
+            {
+                _activeStroke.Initialize(activeMaterial, settings);
+                SyncParticleToMesh(_currentStrokeInstance);
+            }
+        }
+    }
+
+    // 2. TRIGGER HELD (Continuous - MUST be in Update)
+    public void UpdateDrawing()
+    {
+        if (_currentStrokeInstance == null) return;
+
+        if (_isParticleBrushActive)
+        {
+            // THIS IS THE FIX: Physically drag the emitter through the air
+            _currentStrokeInstance.transform.position = brushTip.position;
+            _currentStrokeInstance.transform.rotation = brushTip.rotation;
+
+            if (_currentPS != null && brushSizeSlider != null)
+            {
+                var main = _currentPS.main;
+                main.startSize = brushSizeSlider.value;
+            }
+
+            // Safety: If you stop moving, Rate Over Distance stops spawning.
+            // If you want it to always spawn while still, set main.startSize here too.
+        }
+        else
+        {
+            // Standard LineRenderer brush logic could go here
+        }
+    }
+
+    // 3. TRIGGER RELEASED (End)
+    public void StopDrawing()
+    {
+        if (_isParticleBrushActive && _currentPS != null)
+        {
+            // Stop emitting so the trail doesn't follow your hand to the UI
+            var emission = _currentPS.emission;
+            emission.enabled = false;
+        }
+
+        _currentStrokeInstance = null;
+        _currentPS = null;
+        _isParticleBrushActive = false;
     }
 
     // --- Bridge for your ColorPicker.cs ---
@@ -137,12 +1030,42 @@ public class DrawingManager : MonoBehaviour
     {
         if (settings != null)
             settings.activeColor = c;
+
+        SyncBrushMaterialColor(c);
     }
 
     private void OnColorSelected(Color c)
     {
         if (settings != null)
             settings.activeColor = c;
+
+        SyncBrushMaterialColor(c);
         Debug.Log("Color Selection Finalized");
+    }
+
+    private void SyncBrushMaterialColor(Color color)
+    {
+        SyncActiveBrushMaterialColor(color);
+    }
+
+    // Optional UI hooks for EventTrigger on Color Picker panel.
+    public void OnColorPickerPointerEnter()
+    {
+        canDraw = false;
+    }
+
+    public void OnColorPickerPointerExit()
+    {
+        canDraw = true;
+    }
+
+    private void OnDrawGizmosSelected()
+    {
+        if (brushTip == null || settings == null || currentTool != ToolMode.Erase)
+            return;
+
+        Gizmos.color = new Color(0f, 0f, 0f, 0.35f);
+        float radius = settings.brushRadius * Mathf.Max(0f, eraserRadiusMultiplier);
+        Gizmos.DrawSphere(brushTip.position, radius);
     }
 }

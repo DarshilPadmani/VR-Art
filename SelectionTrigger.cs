@@ -4,6 +4,7 @@ using UnityEngine;
 public class SelectionTrigger : MonoBehaviour
 {
     public SelectionManager manager;
+    public BrushSettings brushSettings;
 
     private void Awake()
     {
@@ -22,7 +23,16 @@ public class SelectionTrigger : MonoBehaviour
         if (other.gameObject.layer == LayerMask.NameToLayer("Drawing"))
         {
             Debug.Log("<color=white>[Physics]</color> SUCCESS: Sphere touched drawing layer.");
-            manager.ProcessSphereTouch(other.gameObject);
+
+            // Check if eraser mode is active
+            if (brushSettings != null && brushSettings.isEraserMode)
+            {
+                manager.ProcessEraserTouch(other.gameObject);
+            }
+            else
+            {
+                manager.ProcessSphereTouch(other.gameObject);
+            }
         }
     }
 }

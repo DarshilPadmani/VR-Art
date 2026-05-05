@@ -32,6 +32,50 @@ public sealed class CompositeUndoAction : IUndoAction
     }
 }
 
+/// <summary>
+/// Records a mesh modification (partial erase) for undo/redo support.
+/// Captures the state before erasure and can restore it.
+/// </summary>
+public sealed class MeshModifyAction : IUndoAction
+{
+    private readonly ProBrushStroke _stroke;
+    private readonly ProBrushStroke.MeshState _stateBefore;
+    private ProBrushStroke.MeshState _stateAfter;
+
+    public MeshModifyAction(ProBrushStroke stroke)
+    {
+        _stroke = stroke;
+        // Capture state before modification
+        _stateBefore = stroke != null ? stroke.CaptureMeshState() : null;
+        _stateAfter = null;
+    }
+
+    public void CaptureStateAfter()
+    {
+        if (_stroke == null)
+            return;
+        _stateAfter = _stroke.CaptureMeshState();
+    }
+
+    public void Undo()
+    {
+        if (_stroke == null || _stateBefore == null)
+            return;
+
+        _stroke.RestoreMeshState(_stateBefore);
+        Debug.Log("<color=yellow>[History]</color> Undo partial erase.");
+    }
+
+    public void Redo()
+    {
+        if (_stroke == null || _stateAfter == null)
+            return;
+
+        _stroke.RestoreMeshState(_stateAfter);
+        Debug.Log("<color=green>[History]</color> Redo partial erase.");
+    }
+}
+
 public sealed class PartialEraseAction : IUndoAction
 {
     private readonly GameObject _originalStroke;

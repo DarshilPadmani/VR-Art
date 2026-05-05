@@ -233,6 +233,64 @@ public class SelectionManager : MonoBehaviour
         AddObjectToSelection(stroke);
     }
 
+    public void ProcessEraserTouch(GameObject stroke)
+    {
+        if (stroke == null || rightHandSphere == null)
+            return;
+
+        ProBrushStroke brushStroke = stroke.GetComponent<ProBrushStroke>();
+        if (brushStroke == null)
+            return;
+
+        // Get brush settings from the manager or right hand sphere
+        BrushSettings settings = FindObjectOfType<BrushUIController>()?.settings;
+        
+        if (settings == null)
+        {
+            // Fallback: Try to get from SelectionTrigger
+            SelectionTrigger trigger = FindObjectOfType<SelectionTrigger>();
+            if (trigger != null)
+                settings = trigger.brushSettings;
+        }
+
+        if (settings == null)
+            return;
+
+        if (settings.eraseOnlyTouchedPoints)
+        {
+            // PARTIAL ERASE: Modify the mesh by erasing only the touched portion
+            // Record undo action to capture mesh state before modification
+            MeshModifyAction modifyAction = null;
+            if (historyManager != null)
+            {
+                modifyAction = new MeshModifyAction(brushStroke);
+            }
+
+            float eraserRadius = rightHandSphere.transform.localScale.x / 2f;
+            brushStroke.EraseAtPosition(rightHandSphere.transform.position, eraserRadius);
+
+            // Capture state after modification for proper redo support
+            if (modifyAction != null)
+            {
+                modifyAction.CaptureStateAfter();
+                historyManager.RecordAction(modifyAction);
+            }
+
+            Debug.Log("<color=cyan>[Eraser]</color> Partial erase applied to stroke.");
+        }
+        else
+        {
+            // FULL ERASE: Destroy the entire stroke (original behavior)
+            if (historyManager != null)
+            {
+                historyManager.RecordAction(new StrokeAction(stroke, StrokeActionType.DeleteStroke));
+            }
+
+            Destroy(stroke);
+            Debug.Log("<color=cyan>[Eraser]</color> Full stroke erased and destroyed.");
+        }
+    }
+
     public void AutoSelectOnTouch(GameObject stroke)
     {
         ProcessSphereTouch(stroke);
